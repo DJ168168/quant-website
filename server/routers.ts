@@ -2440,6 +2440,84 @@ export const appRouter = router({
         return { success: true };
       }),
   }),
+
+  // ─── 实时市场行情（OKX 公开 API，无需 key，无地区限制）──────────────────────
+  market: router({
+    // K 线 OHLCV 数据（OKX SPOT）
+    klines: publicProcedure
+      .input(z.object({
+        symbol: z.string().default("BTC"),
+        interval: z.string().default("15m"),
+        limit: z.number().default(72),
+      }))
+      .query(async ({ input }) => {
+        // OKX 时间周期映射 (前端用小写，OKX 小时/日用大写)
+        const barMap: Record<string, string> = {
+          "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
+          "1h": "1H", "2h": "2H", "4h": "4H", "6h": "6H", "12h": "12H",
+          "1d": "1D", "1w": "1W",
+        };
+        const bar = barMap[input.interval] ?? "15m";
+        const instId = `${input.symbol.toUpperCase()}-USDT`;
+        const url = `https://www.okx.com/api/v5/market/candles?instId=${instId}&bar=${bar}&limit=${input.limit}`;
+        try {
+          const resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
+          if (!resp.ok) throw new Error(`OKX klines HTTP ${resp.status}`);
+          const json = await resp.json() as any;
+          if (json.code !== "0") throw new Error(`OKX klines error: ${json.msg}`);
+          // OKX 返回格式: [ts, open, high, low, close, vol, volCcy, volCcyQuote, confirm]
+          // 注意: OKX 数据是倒序（最新在前），需要反转
+          const candles = (json.data as any[]).reverse().map((k: any) => ({
+            time: new Date(Number(k[0])).toISOString(),
+            open: Number(k[1]),
+            high: Number(k[2]),
+            low: Number(k[3]),
+            close: Number(k[4]),
+            volume: Number(k[5]),
+          }));
+          return { candles, source: "okx" as const };
+        } catch (e) {
+          console.error("[market.klines]", e);
+          return { candles: [] as any[], source: "error" as const };
+        }
+      }),
+
+    // 多币种实时报价（OKX，并发 8 个请求）
+    tickers: publicProcedure
+      .input(z.object({
+        symbols: z.array(z.string()).default(["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX"]),
+      }))
+      .query(async ({ input }) => {
+        try {
+          const results = await Promise.allSettled(
+            input.symbols.map(sym =>
+              fetch(`https://www.okx.com/api/v5/market/ticker?instId=${sym.toUpperCase()}-USDT`, { signal: AbortSignal.timeout(8000) })
+                .then(r => r.json())
+                .then((json: any) => ({ sym: sym.toUpperCase(), data: json?.data?.[0] ?? null }))
+            )
+          );
+          const result: Record<string, { price: number; change24h: number; high24h: number; low24h: number; volume: number }> = {};
+          for (const r of results) {
+            if (r.status !== "fulfilled" || !r.value.data) continue;
+            const { sym, data } = r.value;
+            const price = Number(data.last ?? 0);
+            const open24h = Number(data.open24h ?? price);
+            const change24h = open24h > 0 ? ((price - open24h) / open24h) * 100 : 0;
+            result[sym] = {
+              price,
+              change24h: Math.round(change24h * 100) / 100,
+              high24h: Number(data.high24h ?? 0),
+              low24h: Number(data.low24h ?? 0),
+              volume: Number(data.volCcy24h ?? 0),
+            };
+          }
+          return { tickers: result, updatedAt: Date.now() };
+        } catch (e) {
+          console.error("[market.tickers]", e);
+          return { tickers: {} as Record<string, { price: number; change24h: number; high24h: number; low24h: number; volume: number }>, updatedAt: 0 };
+        }
+      }),
+  }),
 });
 
 export type AppRouter = typeof appRouter;
