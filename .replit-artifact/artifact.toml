@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "量化交易控制台"
+version = "1.0.0"
+id = "artifacts/quant-console"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/", "/api/trpc", "/api/oauth" ]
+localPort = 20880
+
+[services.development]
+run = "pnpm --filter @workspace/quant-console run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/quant-console", "run", "build" ]
+publicDir = "artifacts/quant-console/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20880"
+BASE_PATH = "/"
